@@ -17,6 +17,7 @@ from sqlalchemy import inspect, text
 
 from config import Config
 from controllers import all_blueprints
+from controllers.seclog import write_404log
 from extensions import client_ip, db, jwt
 
 
@@ -104,11 +105,17 @@ def create_app(config_class=Config):
     @app.after_request
     def _web_scan_probe(response):
         """스캐너(nikto·gobuster 등)는 없는 경로에 404를 대량 유발한다.
-        404를 GELF(rule='web-scan')로 신고 → Graylog src_ip 집계가 '한 IP 404 폭주'를 탐지.
+        404를 ① Wazuh security.log(에이전트가 읽어 wazuh-dashboard 집계)와
+        ② 기존 GELF(rule='web-scan', Graylog→n8n) 양쪽에 다 기록한다.
         /api/admin 은 제외(운영·n8n 트래픽 오탐 방지, _block_ip_guard와 같은 이유)."""
         try:
             if response.status_code == 404 and not request.path.startswith('/api/admin'):
-                _report_web_scan_to_graylog(client_ip(), request.path[:120])
+                ip, path = client_ip(), request.path[:120]
+                try:
+                    write_404log(ip, path)              # ① Wazuh security.log
+                except Exception:
+                    pass
+                _report_web_scan_to_graylog(ip, path)   # ② 기존 Graylog
         except Exception:
             pass  # 신고 실패가 응답을 막지 않게
         return response
